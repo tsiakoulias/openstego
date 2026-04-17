@@ -176,7 +176,6 @@ public class DctLSBOutputStream extends OutputStream {
         int xb;
         int yb;
         int coeffNum;
-        int coeff;
 
         for (int count = 0; count < 8; count++) {
             if (this.n >= (this.imgWidth * this.imgHeight * 8)) {
@@ -200,23 +199,136 @@ public class DctLSBOutputStream extends OutputStream {
             // Quantize block according to quantization quality parameter
             this.dct.quantize8x8(this.dcts);
 
-            // Read the coefficient value and replace its LSB based on the message bit
-            coeff = (int) this.dcts[coeffNum / DCT.NJPEG][coeffNum % DCT.NJPEG];
-            if (((data >> (7 - count)) & 1) == 1) {
-                coeff |= 1;
-            } else {
-                coeff &= ~(1);
+            // Robust LSB embedding (interop-bugfixes patch).
+            //
+            // The original implementation truncated the quantized coefficient
+            // toward zero (`(int) coeff`) and then OR'd / AND'd the LSB. That
+            // could move the coefficient up to 1.0 unit away from its
+            // original value, AND the read path symmetrically truncated the
+            // re-quantized coefficient — so any sub-integer drift introduced
+            // by the inverse DCT + pixel rounding + forward DCT round trip
+            // could flip the recovered LSB.
+            //
+            // Two surgical changes harden the round trip:
+            //   (a) snap the coefficient to the *nearest integer of the
+            //       desired parity* (max displacement 0.5 instead of 1.0); and
+            //   (b) after embedding, simulate the read by inverse-DCT'ing
+            //       this block, re-doing the forward DCT + quantization,
+            //       and checking that the recovered LSB matches. If it does
+            //       not, push the embedded coefficient by +/-2 (which
+            //       preserves parity), restore the rest of the block from
+            //       the saved quantized snapshot, and try again, up to
+            //       MAX_VERIFY_ATTEMPTS times.
+            //
+            // The matching read path now uses Math.round() instead of
+            // truncation; see DctLSBInputStream#read.
+            int desiredBit = ((data >> (7 - count)) & 1);
+            int coeffR = coeffNum / DCT.NJPEG;
+            int coeffC = coeffNum % DCT.NJPEG;
+            double origVal = this.dcts[coeffR][coeffC];
+
+            // Snapshot the entire quantized block. Each verification pass
+            // restores from this snapshot before mutating the embedding
+            // coefficient and inverse-DCT'ing back to pixels — otherwise
+            // the verification fwdDct would clobber the surrounding
+            // coefficients and subsequent retries would build on noise.
+            double[][] snapshot = new double[DCT.NJPEG][DCT.NJPEG];
+            for (int i = 0; i < DCT.NJPEG; i++) {
+                System.arraycopy(this.dcts[i], 0, snapshot[i], 0, DCT.NJPEG);
             }
-            this.dcts[coeffNum / DCT.NJPEG][coeffNum % DCT.NJPEG] = coeff;
 
-            // Dequantize the block
-            this.dct.dequantize8x8(this.dcts);
+            long target = nearestParity(origVal, desiredBit);
+            double[][] verifyDcts = new double[DCT.NJPEG][DCT.NJPEG];
+            int[][] simY = new int[DCT.NJPEG][DCT.NJPEG];
+            int yOff = xb * DCT.NJPEG;
+            int xOff = yb * DCT.NJPEG;
+            for (int attempt = 0; attempt <= MAX_VERIFY_ATTEMPTS; attempt++) {
+                // Restore the quantized block, then patch in the embedding coefficient.
+                for (int i = 0; i < DCT.NJPEG; i++) {
+                    System.arraycopy(snapshot[i], 0, this.dcts[i], 0, DCT.NJPEG);
+                }
+                this.dcts[coeffR][coeffC] = (double) target;
 
-            // Do the inverse DCT on the modified 8x8 block
-            this.dct.invDctBlock8x8(this.dcts, this.y, xb * DCT.NJPEG, yb * DCT.NJPEG);
+                // Dequantize + inverse DCT writes the block back into Y.
+                this.dct.dequantize8x8(this.dcts);
+                this.dct.invDctBlock8x8(this.dcts, this.y, yOff, xOff);
+
+                // Simulate the full pixel pipeline that the reader will see:
+                // YUV -> RGB (clamped 0..255) -> YUV. The (int) truncations
+                // and clamps in this round trip are the dominant source of
+                // sub-pixel drift that flips embedded LSBs on read.
+                for (int dy = 0; dy < DCT.NJPEG; dy++) {
+                    for (int dx = 0; dx < DCT.NJPEG; dx++) {
+                        int yy = this.y[yOff + dy][xOff + dx];
+                        int uu = this.u[yOff + dy][xOff + dx];
+                        int vv = this.v[yOff + dy][xOff + dx];
+                        int rr = ImageUtil.pixelRange(yy + 1.140 * vv);
+                        int gg = ImageUtil.pixelRange(yy - 0.395 * uu - 0.581 * vv);
+                        int bb = ImageUtil.pixelRange(yy + 2.032 * uu);
+                        simY[dy][dx] = (int) ((0.299 * rr) + (0.587 * gg) + (0.114 * bb));
+                    }
+                }
+
+                // Verify by re-running the full read pipeline on the
+                // simulated post-roundtrip Y block.
+                this.dct.fwdDctBlock8x8(simY, 0, 0, verifyDcts);
+                this.dct.quantize8x8(verifyDcts);
+                long readback = Math.round(verifyDcts[coeffR][coeffC]);
+                // Require the readback both have the right parity AND
+                // sit safely away from the half-integer rounding
+                // boundary. Coefficients landing within
+                // BOUNDARY_MARGIN of a boundary can flip parity due to
+                // drift not captured by our YUV/RGB simulation
+                // (BufferedImage type conversions, color-space
+                // subtleties, downstream rounding differences).
+                double frac = Math.abs(verifyDcts[coeffR][coeffC] - (double) readback);
+                boolean safelyInCell = frac < 0.5 - BOUNDARY_MARGIN;
+                if (((int) (readback & 1L)) == desiredBit && safelyInCell) {
+                    break;
+                }
+                // Drift flipped the recovered LSB. Push the embedded
+                // coefficient further away from the boundary in the
+                // direction the drift pulled. Step by +/-2 to preserve
+                // parity; alternate sign and grow per attempt to cover
+                // both directions of drift.
+                long delta = readback - target;
+                long step;
+                if (delta != 0) {
+                    step = (delta > 0 ? -2L : 2L) * (long) ((attempt / 2) + 1);
+                } else {
+                    step = ((attempt & 1) == 0 ? 2L : -2L) * (long) ((attempt / 2) + 1);
+                }
+                target += step;
+            }
 
             this.n++;
         }
+    }
+
+    /** Maximum number of verify-and-adjust attempts per embedded bit. */
+    private static final int MAX_VERIFY_ATTEMPTS = 32;
+
+    /**
+     * Required distance from a half-integer rounding boundary that the
+     * post-roundtrip simulated coefficient must sit at. Coefficients
+     * closer than this can flip parity due to drift our YUV/RGB
+     * simulation cannot perfectly predict.
+     */
+    private static final double BOUNDARY_MARGIN = 0.20;
+
+    /**
+     * Snap {@code value} to the nearest integer whose least significant bit
+     * equals {@code bit}. Maximum displacement is 1.0 (when the rounded
+     * value already has the wrong parity); 0.5 in the typical case.
+     */
+    private static long nearestParity(double value, int bit) {
+        long rounded = Math.round(value);
+        if ((int) (rounded & 1L) == bit) {
+            return rounded;
+        }
+        // Move one step toward the side of `value` we're closer to so we
+        // overshoot by the smaller amount.
+        return (value > rounded) ? rounded + 1 : rounded - 1;
     }
 
     /**

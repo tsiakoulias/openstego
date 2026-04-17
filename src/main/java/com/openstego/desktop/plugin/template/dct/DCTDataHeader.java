@@ -26,13 +26,25 @@ public class DCTDataHeader {
     /**
      * Header version to distinguish between various versions of data embedding. This should be changed to next
      * version, in case the structure of the header is changed.
+     *
+     * <p>Local interop-bugfixes patch: bumped from 1 to 2. Version 2 appends an 8-byte encryption-algorithm
+     * identifier (matching the {@code LSBDataHeader} layout). The legacy upstream version 1 header omitted the
+     * algorithm name, which made encrypted DCT-LSB stego files undecodable unless the extracting CLI happened to
+     * default to the same encryption algorithm the embedder used. The reader still accepts version 1 headers for
+     * backwards compatibility (and falls back to the config's current encryption algorithm in that case).
      */
-    public static final byte[] HEADER_VERSION = new byte[]{(byte) 1};
+    public static final byte[] HEADER_VERSION = new byte[]{(byte) 2};
 
     /**
      * Length of the fixed portion of the header
      */
     private static final int FIXED_HEADER_LENGTH = 7;
+
+    /**
+     * Length of the encryption algorithm identifier appended to version-2 headers (matches
+     * {@code LSBDataHeader.CRYPT_ALGO_LENGTH}).
+     */
+    private static final int CRYPT_ALGO_LENGTH = 8;
 
     /**
      * Length of the data embedded in the image (excluding the header data)
@@ -96,7 +108,14 @@ public class DCTDataHeader {
             }
 
             n = dataInStream.read(version, 0, versionLen);
-            if (n == -1 || !(new String(version)).equals(new String(HEADER_VERSION))) {
+            if (n == -1) {
+                throw new OpenStegoException(null, DCTPluginTemplate.NAMESPACE, DCTErrors.INVALID_HEADER_VERSION);
+            }
+            // Local interop-bugfixes patch: accept versions 1 and 2. Version 2 appends an 8-byte
+            // encryption-algorithm field (mirroring LSBDataHeader). Version 1 lacks that field and
+            // leaves the algorithm at the config default.
+            int headerVersion = version[0] & 0xFF;
+            if (headerVersion != 1 && headerVersion != ((int) HEADER_VERSION[0] & 0xFF)) {
                 throw new OpenStegoException(null, DCTPluginTemplate.NAMESPACE, DCTErrors.INVALID_HEADER_VERSION);
             }
 
@@ -109,6 +128,17 @@ public class DCTDataHeader {
             fileNameLen = header[4];
             config.setUseCompression(header[5] == 1);
             config.setUseEncryption(header[6] == 1);
+
+            // Version 2: read the encryption-algorithm identifier so that extract knows which
+            // algorithm to derive the AES key under. Version 1 stego files lack this field.
+            if (headerVersion >= 2) {
+                byte[] cryptAlgo = new byte[CRYPT_ALGO_LENGTH];
+                n = dataInStream.read(cryptAlgo, 0, CRYPT_ALGO_LENGTH);
+                if (n < CRYPT_ALGO_LENGTH) {
+                    throw new OpenStegoException(null, DCTPluginTemplate.NAMESPACE, DCTErrors.INVALID_STEGO_HEADER);
+                }
+                config.setEncryptionAlgorithm(new String(cryptAlgo, StandardCharsets.UTF_8).trim());
+            }
 
             if (fileNameLen == 0) {
                 this.fileName = new byte[0];
@@ -141,7 +171,7 @@ public class DCTDataHeader {
 
         stampLen = DATA_STAMP.length;
         versionLen = HEADER_VERSION.length;
-        out = new byte[stampLen + versionLen + FIXED_HEADER_LENGTH + this.fileName.length];
+        out = new byte[stampLen + versionLen + FIXED_HEADER_LENGTH + CRYPT_ALGO_LENGTH + this.fileName.length];
 
         System.arraycopy(DATA_STAMP, 0, out, currIndex, stampLen);
         currIndex += stampLen;
@@ -156,6 +186,15 @@ public class DCTDataHeader {
         out[currIndex++] = (byte) this.fileName.length;
         out[currIndex++] = (byte) (this.config.isUseCompression() ? 1 : 0);
         out[currIndex++] = (byte) (this.config.isUseEncryption() ? 1 : 0);
+
+        // Local interop-bugfixes patch: write the encryption-algorithm identifier (matches LSBDataHeader).
+        // Always write a fixed-width 8-byte slot so the layout is positional. Empty-padded with NULs;
+        // the reader trims trailing whitespace/NULs.
+        if (this.config.getEncryptionAlgorithm() != null) {
+            byte[] encAlgo = this.config.getEncryptionAlgorithm().getBytes(StandardCharsets.UTF_8);
+            System.arraycopy(encAlgo, 0, out, currIndex, Math.min(encAlgo.length, CRYPT_ALGO_LENGTH));
+        }
+        currIndex += CRYPT_ALGO_LENGTH;
 
         if (this.fileName.length > 0) {
             System.arraycopy(this.fileName, 0, out, currIndex, this.fileName.length);
@@ -189,7 +228,7 @@ public class DCTDataHeader {
      * @return Header size
      */
     public int getHeaderSize() {
-        return DATA_STAMP.length + HEADER_VERSION.length + FIXED_HEADER_LENGTH + this.fileName.length;
+        return DATA_STAMP.length + HEADER_VERSION.length + FIXED_HEADER_LENGTH + CRYPT_ALGO_LENGTH + this.fileName.length;
     }
 
     /**
@@ -199,6 +238,6 @@ public class DCTDataHeader {
      */
     public static int getMaxHeaderSize() {
         // Max file name length assumed to be 256
-        return DATA_STAMP.length + HEADER_VERSION.length + FIXED_HEADER_LENGTH + 256;
+        return DATA_STAMP.length + HEADER_VERSION.length + FIXED_HEADER_LENGTH + CRYPT_ALGO_LENGTH + 256;
     }
 }

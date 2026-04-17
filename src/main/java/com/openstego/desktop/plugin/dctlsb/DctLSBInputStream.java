@@ -147,8 +147,20 @@ public class DctLSBInputStream extends InputStream {
             // Quantize block according to quantization quality parameter
             this.dct.quantize8x8(this.dcts);
 
-            // Get the LSB of the coefficient
-            out = (out << 1) + (((int) this.dcts[coeffNum / DCT.NJPEG][coeffNum % DCT.NJPEG]) & 1);
+            // Get the LSB of the coefficient.
+            //
+            // interop-bugfixes patch: round the dequantized coefficient
+            // to the nearest integer (instead of the previous truncation
+            // toward zero) so that sub-integer drift introduced by the
+            // inverse-DCT + pixel-rounding + forward-DCT round trip does
+            // not flip the recovered LSB. The matching change in
+            // DctLSBOutputStream snaps the embedded coefficient to the
+            // nearest integer of the desired parity, then iteratively
+            // verifies the survival of the bit through this same read
+            // pipeline.
+            long rawCoeff = Math.round(this.dcts[coeffNum / DCT.NJPEG][coeffNum % DCT.NJPEG]);
+            int rbit = (int) (rawCoeff & 1L);
+            out = (out << 1) + rbit;
 
             this.n++;
         }

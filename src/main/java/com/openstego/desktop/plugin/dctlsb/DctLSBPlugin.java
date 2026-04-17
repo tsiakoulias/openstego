@@ -42,6 +42,37 @@ public class DctLSBPlugin extends WMImagePluginTemplate {
     }
 
     /**
+     * Local interop patch: expose DctLSB as both Watermarking and Data Hiding
+     * so the {@code embed}/{@code extract} CLI verbs accept it (the
+     * upstream DctLSBPlugin advertises Watermarking only, but DctLSB has
+     * always carried a {@link DCTDataHeader} with a real payload + filename
+     * exactly like the data-hiding plugins). The Rust port treats DctLSB as
+     * data-hiding; this override keeps the two CLI dispatch surfaces aligned.
+     */
+    @Override
+    public java.util.List<Purpose> getPurposes() {
+        java.util.List<Purpose> purposes = new java.util.ArrayList<>();
+        purposes.add(Purpose.DATA_HIDING);
+        purposes.add(Purpose.WATERMARKING);
+        return purposes;
+    }
+
+    /**
+     * Local interop patch: required by the data-hiding CLI path. Mirrors
+     * {@link #extractData} but only decodes the header to recover the
+     * embedded filename.
+     */
+    @Override
+    public String extractMsgFileName(byte[] stegoData, String stegoFileName) throws OpenStegoException {
+        ImageHolder imgHolder = ImageUtil.byteArrayToImage(stegoData, stegoFileName);
+        try (DctLSBInputStream is = new DctLSBInputStream(imgHolder, this.config)) {
+            return is.getDataHeader().getFileName();
+        } catch (IOException ioEx) {
+            throw new OpenStegoException(ioEx);
+        }
+    }
+
+    /**
      * Gives the name of the plugin
      *
      * @return Name of the plugin

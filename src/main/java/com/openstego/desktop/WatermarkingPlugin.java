@@ -25,7 +25,7 @@ public abstract class WatermarkingPlugin<C extends OpenStegoConfig> extends Open
      * @return Purpose(s) of the plugin
      */
     @Override
-    public final List<Purpose> getPurposes() {
+    public List<Purpose> getPurposes() {
         List<Purpose> purposes = new ArrayList<>();
         purposes.add(Purpose.WATERMARKING);
         return purposes;
@@ -42,7 +42,7 @@ public abstract class WatermarkingPlugin<C extends OpenStegoConfig> extends Open
      * @return Message file name
      */
     @Override
-    public final String extractMsgFileName(byte[] stegoData, String stegoFileName) {
+    public String extractMsgFileName(byte[] stegoData, String stegoFileName) throws com.openstego.desktop.OpenStegoException {
         return null;
     }
 

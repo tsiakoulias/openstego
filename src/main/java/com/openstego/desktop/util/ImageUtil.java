@@ -267,7 +267,11 @@ public class ImageUtil {
         y = yuv.get(0);
         u = yuv.get(1);
         v = yuv.get(2);
-        aa = yuv.get(3);
+        // Local interop patch: alpha plane is optional. Upstream callers
+        // (e.g. DctLSBOutputStream.getImage()) emit a 3-element YUV list
+        // without an alpha plane; the original `yuv.get(3)` throws
+        // IndexOutOfBoundsException. Treat missing alpha as fully opaque.
+        aa = (yuv.size() > 3) ? yuv.get(3) : null;
 
         height = y.length;
         width = y[0].length;
@@ -279,7 +283,7 @@ public class ImageUtil {
                 r = pixelRange(y[i][j] + 1.140 * v[i][j]);
                 g = pixelRange(y[i][j] - 0.395 * u[i][j] - 0.581 * v[i][j]);
                 b = pixelRange(y[i][j] + 2.032 * u[i][j]);
-                a = aa[i][j];
+                a = (aa != null) ? aa[i][j] : 255;
 
                 image.setRGB(j, i, (a << 24) + (r << 16) + (g << 8) + b);
             }
