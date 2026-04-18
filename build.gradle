@@ -19,6 +19,9 @@ plugins {
 
 String projectName = 'OpenStego'
 File distBaseDir = file("${buildDir}/${distsDirName}/package")
+File distWinJpackageDir = file("${buildDir}/jpackage")
+File distWinInputDir = file("${distWinJpackageDir}/input")
+File distWinAppDir = file("${distWinJpackageDir}/${projectName}")
 String currYear = new SimpleDateFormat('yyyy').format(new Date())
 def filterTokens = [
         'app.name'    : projectName,
@@ -28,6 +31,26 @@ def filterTokens = [
         'homepage.url': project.homepageUrl,
         'time.year'   : currYear
 ]
+def resolveJavaTool = { toolName ->
+    def executable = Os.isFamily(Os.FAMILY_WINDOWS) ? "${toolName}.exe" : toolName
+    def javaHomes = [
+            project.findProperty('jpackageHome'),
+            System.getenv('JPACKAGE_HOME'),
+            System.getenv('JAVA_HOME'),
+            System.getProperty('java.home')
+    ].findAll { it != null && it.toString().trim().length() > 0 }
+
+    for (def javaHome : javaHomes) {
+        def candidate = file("${javaHome}/bin/${executable}")
+        if (candidate.exists()) {
+            return candidate.absolutePath
+        }
+    }
+
+    return executable
+}
+def jpackageCommand = resolveJavaTool('jpackage')
+def winRuntimeModules = ['java.base', 'java.desktop', 'java.prefs', 'java.xml', 'jdk.charsets']
 
 repositories {
     mavenCentral()
@@ -37,17 +60,8 @@ sourceSets {
     main {
         java {
             srcDir 'src/main/java'
-            exclude 'com/openstego/desktop/plugin/dctlsb/**'
-            exclude 'com/openstego/desktop/plugin/dwtkim/**'
-            exclude 'com/openstego/desktop/plugin/dwtxie/**'
-            exclude 'com/openstego/desktop/plugin/template/dct/**'
-            exclude 'com/openstego/desktop/util/dct/**'
         }
         resources {
-            exclude 'com/openstego/desktop/resource/i18n/DctLSB*'
-            exclude 'com/openstego/desktop/resource/i18n/DCTPlugin*'
-            exclude 'com/openstego/desktop/resource/i18n/DWTKim*'
-            exclude 'com/openstego/desktop/resource/i18n/DWTXie*'
             exclude 'com/openstego/desktop/resource/i18n/*_ja.properties'
         }
     }
@@ -151,8 +165,74 @@ tasks.register("distBin", Zip) {
     into project.name + '-' + project.version
 }
 
+tasks.register("distWinExe", Exec) {
+    dependsOn jar
+
+    onlyIf {
+        Os.isFamily(Os.FAMILY_WINDOWS)
+    }
+
+    inputs.file(tasks.jar.archiveFile)
+    inputs.file(file('src/main/dist/openstego.ico'))
+    inputs.file(file('artifacts/openstego-cli.properties'))
+    inputs.file(file('artifacts/README-win.txt'))
+    inputs.file(file('LICENSE'))
+    outputs.dir(distWinAppDir)
+
+    doFirst {
+        delete distWinInputDir, distWinAppDir
+
+        copy {
+            from(tasks.jar.archiveFile)
+            into distWinInputDir
+        }
+    }
+
+    commandLine jpackageCommand,
+            '--type', 'app-image',
+            '--dest', distWinJpackageDir.path,
+            '--input', distWinInputDir.path,
+            '--name', projectName,
+            '--main-jar', 'openstego.jar',
+            '--main-class', 'com.openstego.desktop.OpenStego',
+            '--icon', file('src/main/dist/openstego.ico').path,
+            '--app-version', project.version.toString(),
+            '--vendor', project.author.toString(),
+            '--description', 'Steganography utility to hide messages into cover files',
+            '--copyright', "Copyright (c) 2007-${currYear} ${project.author}",
+            '--java-options', '-Xmx1024m',
+            '--add-modules', winRuntimeModules.join(','),
+            '--add-launcher', "${projectName}CLI=${file('artifacts/openstego-cli.properties').path}"
+
+    doLast {
+        copy {
+            from('LICENSE')
+            into distWinAppDir
+        }
+
+        copy {
+            from('artifacts/README-win.txt')
+            into distWinAppDir
+            rename('README-win.txt', 'README')
+            filter(ReplaceTokens, tokens: filterTokens)
+        }
+    }
+}
+
+tasks.register("distWinPortable", Zip) {
+    dependsOn distWinExe
+
+    onlyIf {
+        Os.isFamily(Os.FAMILY_WINDOWS)
+    }
+
+    archiveFileName = "${project.name}-${project.version}-portable.zip"
+    from distWinAppDir
+    into project.name + '-' + project.version
+}
+
 tasks.register("distWin", Exec) {
-    dependsOn distBase
+    dependsOn distWinExe
 
     onlyIf {
         Os.isFamily(Os.FAMILY_WINDOWS)
@@ -167,7 +247,7 @@ tasks.register("distWin", Exec) {
                     'AppVersion' : project.version,
                     'AuthorName' : project.author,
                     'HomepageUrl': project.homepageUrl,
-                    'AppDir'     : distBaseDir.path,
+                    'AppDir'     : distWinAppDir.path,
                     'DistDir'    : project.buildDir.path + '\\distributions'
             ])
         }
@@ -273,5 +353,5 @@ tasks.register("distRpm", Rpm) {
 }
 
 tasks.register("dist") {
-    dependsOn distBin, distWin, distDeb, distRpm
+    dependsOn distBin, distWinPortable, distWin, distDeb, distRpm
 }

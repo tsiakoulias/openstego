@@ -1,2 +1,6 @@
+com.openstego.desktop.plugin.lsb.LSBPlugin
 com.openstego.desktop.plugin.randlsb.RandomLSBPlugin
+com.openstego.desktop.plugin.dctlsb.DctLSBPlugin
 com.openstego.desktop.plugin.dwtdugad.DWTDugadPlugin
+com.openstego.desktop.plugin.dwtkim.DWTKimPlugin
+com.openstego.desktop.plugin.dwtxie.DWTXiePlugin

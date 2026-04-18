@@ -16,16 +16,12 @@ DefaultDirName={autopf}\@AppName@
 DefaultGroupName=@AppName@
 OutputBaseFilename=Setup-@AppName@-@AppVersion@
 LicenseFile=LICENSE
-UninstallDisplayIcon={app}\openstego.ico
+UninstallDisplayIcon={app}\@AppName@.exe
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
 [Files]
-Source: "openstego.bat"; DestDir: "{app}"
-Source: "openstego.ico"; DestDir: "{app}"
-Source: "README"; DestDir: "{app}"
-Source: "LICENSE"; DestDir: "{app}"
-Source: "lib\*"; DestDir: "{app}\lib"
+Source: "*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\@AppName@"; Filename: "{app}\openstego.bat"; WorkingDir: "{app}"; IconFilename: "{app}\openstego.ico"
+Name: "{group}\@AppName@"; Filename: "{app}\@AppName@.exe"; WorkingDir: "{app}"

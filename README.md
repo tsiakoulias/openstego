@@ -8,7 +8,10 @@ OpenStego is a steganography application that provides two functionalities:
 ## Usage
 
 ### For GUI:
-Use menu shortcut for OpenStego if you used installer. For zip downloads, use the bundled batch file or shell script to launch the GUI.
+Use the menu shortcut if you used the Windows installer. For standalone Windows app-image builds, launch the bundled executable directly. For the legacy zip distribution, use the bundled launcher script.
+```
+OpenStego.exe                (standalone Windows package)
+```
 ```
 openstego.bat                (Windows)
 ```
@@ -27,7 +30,17 @@ gradlew clean dist           (Windows)
 ```
 ./gradlew clean dist         (Linux / MacOS)
 ```
-*Note:* Windows installer will be generated only if you execute build on Windows environment. It needs [Inno Setup](https://jrsoftware.org/isdl.php) to be installed, and `iscc.exe` to be on `PATH`. If you don't want to generate Windows installer, you can skip the same using following command:
+
+To build the standalone Windows executable package with a bundled runtime:
+```
+gradlew clean distWinExe
+```
+This creates `build\jpackage\OpenStego\OpenStego.exe` for the GUI and `build\jpackage\OpenStego\OpenStegoCLI.exe` for the command line. To create a portable zip of that package:
+```
+gradlew clean distWinPortable
+```
+
+*Note:* This repository's Gradle 7.5.1 wrapper should be run on JDK 17. Standalone Windows packaging uses `jpackage`; if you want the bundled runtime to come from another JDK (for example JDK 25), keep Gradle on JDK 17 and pass `-PjpackageHome=<path-to-jdk>`. The Windows installer task still needs [Inno Setup](https://jrsoftware.org/isdl.php) and `iscc.exe` on `PATH`, but it now packages the standalone runtime image rather than a bare jar. If you don't want to generate the Windows installer, you can skip the same using following command:
 ```
 ./gradlew clean dist -x distWin
 ```
